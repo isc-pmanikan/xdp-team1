@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Boston 311 &mdash; Attention Queue</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin="">
+
+<style>
+/* ---------------------------------------------------------------------------
+   Colour roles. Every value below is validated, not chosen by eye:
+
+     state-ontime  x  state-breached   CVD dE 23.8 light / 25.7 dark
+                                       normal-vision dE 31.6 / 31.9
+                                       both clear 3:1 on the basemap
+
+   Green was the obvious first choice for "closed" and it FAILED: green #0ca30c
+   against red #d03b3b measures dE 4.1 under deuteranopia, far below the 6.0
+   floor -- the classic red/green trap. Closed cases are context rather than
+   status (11k of 25k rows, none actionable), so they are recessive grey and
+   colour is spent only on the two states that mean something. That also makes
+   the encoding a polarity -- within SLA vs breached -- which is exactly the
+   blue<->red diverging pair with a neutral midpoint.
+   --------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb;
+  --surface-page: #f9f9f7;
+  --surface-sunken: #f2f0e8;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --hairline: #e1e0d9;
+  --border: rgba(11, 11, 11, 0.10);
+
+  --state-closed: #898781;
+  --state-ontime: #2a78d6;
+  --state-breached: #d03b3b;
+
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --surface-page: #0d0d0d;
+    --surface-sunken: #262626;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --hairline: #2c2c2a;
+    --border: rgba(255, 255, 255, 0.10);
+    --state-ontime: #3987e5;
+    /* status critical is fixed, never themed */
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --surface-page: #0d0d0d;
+  --surface-sunken: #262626;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --hairline: #2c2c2a;
+  --border: rgba(255, 255, 255, 0.10);
+  --state-ontime: #3987e5;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 20px;
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* ---- header ---- */
+.masthead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.masthead h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.masthead p { margin: 2px 0 0; color: var(--text-secondary); font-size: 13px; }
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 11px;
+  cursor: pointer;
+}
+button:hover { color: var(--text-primary); border-color: var(--text-muted); }
+
+/* ---- stat tiles ---- */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.tile {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.tile .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.055em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+/* Proportional figures on purpose: tabular-nums makes large standalone
+   numbers look loose. Tabular is reserved for the table rows below. */
+.tile .value {
+  font-size: 27px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-top: 3px;
+}
+.tile .sub { font-size: 12px; color: var(--text-secondary); }
+.tile.hero { border-left: 3px solid var(--state-breached); }
+.tile.hero .value { color: var(--state-breached); }
+
+/* ---- layout ---- */
+.grid {
+  display: grid;
+  grid-template-columns: minmax(340px, 5fr) 7fr;
+  gap: 12px;
+  align-items: start;
+}
+@media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--hairline);
+  flex-wrap: wrap;
+}
+.card h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.card .hint { font-size: 12px; color: var(--text-muted); }
+
+/* Refetch holds the previous render at reduced opacity -- no skeleton flash,
+   no layout jump. */
+.loading { opacity: 0.55; transition: opacity 120ms; }
+
+/* ---- attention queue table ---- */
+.queue-scroll { max-height: 620px; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 7px 14px;
+  font-weight: 600;
+}
+tbody td {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+}
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--surface-sunken); }
+tbody tr.active { background: var(--surface-sunken); }
+/* Aligned columns DO want tabular figures. */
+.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.overdue { color: var(--state-breached); font-weight: 600; }
+.title-cell { font-weight: 500; }
+.meta { color: var(--text-secondary); font-size: 12px; }
+
+/* ---- legend, doubling as the state toggles ---- */
+.legend { display: flex; gap: 6px; flex-wrap: wrap; }
+.legend button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  font-size: 12px;
+}
+.legend button[aria-pressed="false"] { opacity: 0.45; }
+.legend .swatch {
+  border-radius: 50%;
+  /* 2px surface ring, so overlapping marks stay separable */
+  box-shadow: 0 0 0 1.5px var(--surface-1);
+  flex: none;
+}
+/* Size is a second channel alongside hue, so the states stay distinct
+   without relying on colour alone. */
+.legend .swatch.s0 { width: 7px;  height: 7px;  background: var(--state-closed); }
+.legend .swatch.s1 { width: 9px;  height: 9px;  background: var(--state-ontime); }
+.legend .swatch.s2 { width: 11px; height: 11px; background: var(--state-breached); }
+.legend .count { font-variant-numeric: tabular-nums; color: var(--text-muted); }
+
+/* ---- map ---- */
+#map { height: 620px; background: var(--surface-sunken); }
+.points-canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
+.leaflet-container { background: var(--surface-sunken); font-family: var(--font); }
+.leaflet-popup-content-wrapper {
+  background: var(--surface-1);
+  color: var(--text-primary);
+  border-radius: 9px;
+}
+.leaflet-popup-tip { background: var(--surface-1); }
+.popup h3 { margin: 0 0 6px; font-size: 13px; }
+.popup dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; }
+.popup dt { color: var(--text-muted); }
+.popup dd { margin: 0; }
+
+.hovertip {
+  position: fixed;
+  z-index: 900;
+  pointer-events: none;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: 12px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.14);
+  display: none;
+  white-space: nowrap;
+}
+
+.footnote { margin-top: 12px; font-size: 12px; color: var(--text-muted); }
+.error {
+  background: var(--surface-1);
+  border: 1px solid var(--state-breached);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+.error code { color: var(--text-secondary); }
+</style>
+</head>
+
+<body>
+
+<div class="masthead">
+  <div>
+    <h1>Boston 311 &mdash; Attention Queue</h1>
+    <p id="subtitle">Loading&hellip;</p>
+  </div>
+  <button id="theme-toggle" type="button">Dark mode</button>
+</div>
+
+<div id="error-slot"></div>
+
+<div class="tiles" id="tiles"></div>
+
+<div class="grid">
+
+  <section class="card" id="queue-card">
+    <header>
+      <div>
+        <h2>Needs attention</h2>
+        <div class="hint">Open &amp; past SLA target &middot; worst first</div>
+      </div>
+      <span class="hint" id="queue-count"></span>
+    </header>
+    <div class="queue-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Case</th>
+            <th class="num">Overdue</th>
+            <th class="num">Age</th>
+          </tr>
+        </thead>
+        <tbody id="queue-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" id="map-card">
+    <header>
+      <div>
+        <h2>All service requests</h2>
+        <div class="hint">Click a dot for detail &middot; click a legend chip to filter</div>
+      </div>
+      <div class="legend" id="legend"></div>
+    </header>
+    <div id="map"></div>
+  </section>
+
+</div>
+
+<p class="footnote" id="footnote"></p>
+<div class="hovertip" id="hovertip"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+
+<script>
+'use strict';
+
+const API = '/projA/api';
+
+/* State codes must match the CASE expression in ProjA.ServiceRequest.MapData().
+   Radius is deliberately ordered: closed recedes, breached dominates, and the
+   paint order below draws breached last so an urgent case is never buried
+   under a resolved one. */
+const STATES = [
+  { code: 0, key: 'closed',   label: 'Closed',        css: '--state-closed',   radius: 2.4 },
+  { code: 1, key: 'ontime',   label: 'Open, in SLA',  css: '--state-ontime',   radius: 3.4 },
+  { code: 2, key: 'breached', label: 'Past SLA',      css: '--state-breached', radius: 4.4 }
+];
+const PAINT_ORDER = [0, 1, 2];
+
+const enabled = new Set([0, 1, 2]);
+const nf = new Intl.NumberFormat('en-US');
+
+let mapData = null;
+let queueRows = [];
+let pointLayer = null;
+let leafletMap = null;
+let tileLayer = null;
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function showError(message, detail) {
+  document.getElementById('error-slot').innerHTML =
+    '<div class="error"><strong>' + message + '</strong>' +
+    (detail ? '<br><code>' + escapeHtml(detail) + '</code>' : '') + '</div>';
+}
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function getJson(path) {
+  const response = await fetch(API + path, { headers: { Accept: 'application/json' } });
+  const text = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (e) {
+    // An IRIS HTML error page or a 404 from a missing Web Application mapping
+    // lands here. Say which, rather than "unexpected token <".
+    throw new Error('Non-JSON response (HTTP ' + response.status + '). ' +
+      (response.status === 404
+        ? 'Is the /projA/api Web Application created and mapped to ProjA.API?'
+        : text.slice(0, 200)));
+  }
+  if (!response.ok) throw new Error(payload.error || ('HTTP ' + response.status));
+  return payload;
+}
+
+/* ---------- date helpers ---------- */
+/* The API returns ODBC timestamps ("2026-08-13 22:30:00"). Safari will not
+   parse that with new Date(), so split it rather than trusting the engine. */
+function parseStamp(value) {
+  if (!value) return null;
+  const m = String(value).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return null;
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+}
+function shortDate(value) {
+  const d = parseStamp(value);
+  return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+}
+function fullDate(value) {
+  const d = parseStamp(value);
+  return d ? d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'
+  }) : '—';
+}
+function humanHours(hours) {
+  const h = Number(hours);
+  if (!isFinite(h)) return '—';
+  if (h < 48) return h + 'h';
+  const days = Math.floor(h / 24);
+  return days < 60 ? days + 'd' : Math.floor(days / 30) + 'mo';
+}
+
+/* ---------- stat tiles ---------- */
+function renderTiles(summary) {
+  const total = +summary.total || 0;
+  const openCount = +summary.openCount || 0;
+  const breached = +summary.breachedCount || 0;
+  const closed = +summary.closedCount || 0;
+  const noSla = +summary.noSlaCount || 0;
+  const pct = openCount ? Math.round(1000 * breached / openCount) / 10 : 0;
+
+  const tiles = [
+    { label: 'Past SLA, still open', value: breached, sub: pct + '% of open cases', hero: true },
+    { label: 'Open', value: openCount, sub: 'awaiting resolution' },
+    { label: 'Closed', value: closed, sub: 'resolved' },
+    { label: 'Total loaded', value: total, sub: 'rows in IRIS' },
+    { label: 'No SLA target', value: noSla, sub: 'excluded from overdue' }
+  ];
+
+  document.getElementById('tiles').innerHTML = tiles.map(t =>
+    '<div class="tile' + (t.hero ? ' hero' : '') + '">' +
+      '<div class="label">' + t.label + '</div>' +
+      '<div class="value">' + nf.format(t.value) + '</div>' +
+      '<div class="sub">' + t.sub + '</div>' +
+    '</div>'
+  ).join('');
+}
+
+/* ---------- attention queue ---------- */
+function renderQueue(rows) {
+  queueRows = rows;
+  document.getElementById('queue-count').textContent = nf.format(rows.length) + ' shown';
+
+  if (!rows.length) {
+    document.getElementById('queue-body').innerHTML =
+      '<tr><td colspan="3" class="meta">Nothing past its SLA target. ' +
+      'If the table is empty and the tiles read zero, the CSV has not been loaded yet ' +
+      '&mdash; run <code>Do ##class(ProjA.Loader).Run()</code>.</td></tr>';
+    return;
+  }
+
+  document.getElementById('queue-body').innerHTML = rows.map((r, i) =>
+    '<tr data-index="' + i + '">' +
+      '<td>' +
+        '<div class="title-cell">' + escapeHtml(r.title || r.requestType || 'Untitled') + '</div>' +
+        '<div class="meta">' + escapeHtml(r.neighborhood || 'Unknown area') +
+          ' &middot; ' + escapeHtml(r.department || '—') +
+          ' &middot; opened ' + shortDate(r.openedDate) + '</div>' +
+      '</td>' +
+      '<td class="num overdue">' + humanHours(r.hoursOverdue) + '</td>' +
+      '<td class="num meta">' + (r.daysOpen != null ? r.daysOpen + 'd' : '—') + '</td>' +
+    '</tr>'
+  ).join('');
+
+  document.querySelectorAll('#queue-body tr[data-index]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const row = queueRows[+tr.dataset.index];
+      document.querySelectorAll('#queue-body tr').forEach(x => x.classList.remove('active'));
+      tr.classList.add('active');
+      if (row.lat && row.lng) {
+        leafletMap.setView([row.lat, row.lng], 16, { animate: true });
+        openDetail(row.caseId, [row.lat, row.lng]);
+      }
+    });
+  });
+}
+
+/* ---------- legend / toggles ---------- */
+function renderLegend(counts) {
+  document.getElementById('legend').innerHTML = STATES.map(s =>
+    '<button type="button" data-state="' + s.code + '" ' +
+            'aria-pressed="' + enabled.has(s.code) + '">' +
+      '<span class="swatch s' + s.code + '"></span>' +
+      '<span>' + s.label + '</span>' +
+      '<span class="count">' + nf.format(counts[s.code] || 0) + '</span>' +
+    '</button>'
+  ).join('');
+
+  document.querySelectorAll('#legend button').forEach(b => {
+    b.addEventListener('click', () => {
+      const code = +b.dataset.state;
+      if (enabled.has(code)) {
+        // Never let every state be switched off -- an empty map looks broken.
+        if (enabled.size === 1) return;
+        enabled.delete(code);
+      } else {
+        enabled.add(code);
+      }
+      b.setAttribute('aria-pressed', enabled.has(code));
+      if (pointLayer) pointLayer.redraw();
+    });
+  });
+}
+
+/* ---------- canvas point layer ----------
+   25,000 individual Leaflet markers would crawl. This draws every point onto
+   one canvas in the overlay pane and keeps a coarse screen-space grid index so
+   hover and click can resolve the nearest point without scanning all of them.
+   ------------------------------------------------------------------------- */
+const CELL = 34;
+
+const CanvasPoints = L.Layer.extend({
+  initialize(points) {
+    this._points = points;
+    this._index = new Map();
+    this._screen = [];
+  },
+
+  onAdd(map) {
+    this._map = map;
+    this._canvas = L.DomUtil.create('canvas', 'points-canvas');
+    map.getPanes().overlayPane.appendChild(this._canvas);
+    map.on('moveend zoomend resize viewreset', this._reset, this);
+    map.on('zoomstart', this._hide, this);
+    this._reset();
+  },
+
+  onRemove(map) {
+    map.off('moveend zoomend resize viewreset', this._reset, this);
+    map.off('zoomstart', this._hide, this);
+    L.DomUtil.remove(this._canvas);
+  },
+
+  _hide() { this._canvas.style.visibility = 'hidden'; },
+
+  _reset() {
+    const map = this._map;
+    const size = map.getSize();
+    const dpr = window.devicePixelRatio || 1;
+
+    this._canvas.width = size.x * dpr;
+    this._canvas.height = size.y * dpr;
+    this._canvas.style.width = size.x + 'px';
+    this._canvas.style.height = size.y + 'px';
+    L.DomUtil.setPosition(this._canvas, map.containerPointToLayerPoint([0, 0]));
+
+    this._canvas.style.visibility = 'visible';
+    this.redraw();
+  },
+
+  redraw() {
+    const map = this._map;
+    if (!map) return;
+
+    const ctx = this._canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const size = map.getSize();
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size.x, size.y);
+
+    const zoom = map.getZoom();
+    const scale = zoom >= 16 ? 1.7 : zoom >= 14 ? 1.35 : zoom >= 12 ? 1 : 0.8;
+    const ring = cssVar('--surface-1');
+    const colors = {};
+    STATES.forEach(s => { colors[s.code] = cssVar(s.css); });
+
+    this._index = new Map();
+    this._screen = [];
+
+    // Cull to a small margin beyond the viewport, then paint in severity order
+    // so breached dots always land on top of resolved ones.
+    for (const code of PAINT_ORDER) {
+      if (!enabled.has(code)) continue;
+      const spec = STATES.find(s => s.code === code);
+      const r = spec.radius * scale;
+
+      ctx.fillStyle = colors[code];
+      ctx.strokeStyle = ring;
+      ctx.lineWidth = Math.min(1.5, r * 0.5);
+
+      for (let i = 0; i < this._points.length; i++) {
+        const p = this._points[i];
+        if (p[3] !== code) continue;
+        const pt = map.latLngToContainerPoint([p[1], p[2]]);
+        if (pt.x < -20 || pt.y < -20 || pt.x > size.x + 20 || pt.y > size.y + 20) continue;
+
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        if (r >= 3) ctx.stroke();
+
+        const slot = this._screen.length;
+        this._screen.push([pt.x, pt.y, i]);
+        const key = ((pt.x / CELL) | 0) + ':' + ((pt.y / CELL) | 0);
+        let bucket = this._index.get(key);
+        if (!bucket) { bucket = []; this._index.set(key, bucket); }
+        bucket.push(slot);
+      }
+    }
+  },
+
+  /* Nearest point within `tolerance` px of a container point. The hit area is
+     far larger than the 2.4px dot, so dense areas stay clickable. */
+  nearest(containerPoint, tolerance) {
+    const cx = (containerPoint.x / CELL) | 0;
+    const cy = (containerPoint.y / CELL) | 0;
+    let best = null;
+    let bestDistance = tolerance * tolerance;
+
+    for (let gx = cx - 1; gx <= cx + 1; gx++) {
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        const bucket = this._index.get(gx + ':' + gy);
+        if (!bucket) continue;
+        for (const slot of bucket) {
+          const s = this._screen[slot];
+          const dx = s[0] - containerPoint.x;
+          const dy = s[1] - containerPoint.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 <= bestDistance) { bestDistance = d2; best = this._points[s[2]]; }
+        }
+      }
+    }
+    return best;
+  }
+});
+
+/* ---------- map ---------- */
+const TILES = {
+  light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+  dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+};
+
+function isDark() {
+  const stamped = document.documentElement.dataset.theme;
+  if (stamped) return stamped === 'dark';
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function buildMap() {
+  leafletMap = L.map('map', {
+    center: [42.3145, -71.0885],
+    zoom: 12,
+    zoomControl: true,
+    preferCanvas: true
+  });
+
+  tileLayer = L.tileLayer(TILES[isDark() ? 'dark' : 'light'], {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+  }).addTo(leafletMap);
+
+  const tip = document.getElementById('hovertip');
+
+  leafletMap.on('mousemove', e => {
+    if (!pointLayer) return;
+    const hit = pointLayer.nearest(e.containerPoint, 12);
+    if (!hit) { tip.style.display = 'none'; return; }
+    const spec = STATES.find(s => s.code === hit[3]);
+    tip.innerHTML = '<strong>Case ' + hit[0] + '</strong> &middot; ' + spec.label;
+    tip.style.display = 'block';
+    tip.style.left = (e.originalEvent.clientX + 14) + 'px';
+    tip.style.top = (e.originalEvent.clientY + 14) + 'px';
+  });
+  leafletMap.on('mouseout', () => { tip.style.display = 'none'; });
+
+  leafletMap.on('click', e => {
+    if (!pointLayer) return;
+    const hit = pointLayer.nearest(e.containerPoint, 14);
+    if (hit) openDetail(hit[0], [hit[1], hit[2]]);
+  });
+}
+
+async function openDetail(caseId, latlng) {
+  const popup = L.popup({ maxWidth: 330 })
+    .setLatLng(latlng)
+    .setContent('<div class="popup">Loading case ' + caseId + '&hellip;</div>')
+    .openOn(leafletMap);
+  try {
+    const d = await getJson('/request/' + caseId);
+    const rows = [
+      ['Status', d.status + (d.onTime ? ' · ' + d.onTime : '')],
+      ['Type', d.requestType || d.reason],
+      ['Department', d.department],
+      ['Location', d.location],
+      ['Neighborhood', d.neighborhood],
+      ['Opened', fullDate(d.openedDate)],
+      ['SLA target', d.slaTargetDate ? fullDate(d.slaTargetDate) : 'none set'],
+      ['Closed', d.closedDate ? fullDate(d.closedDate) : 'still open'],
+      ['Source', d.source]
+    ].filter(r => r[1]);
+
+    popup.setContent(
+      '<div class="popup"><h3>' + escapeHtml(d.title || 'Case ' + caseId) + '</h3><dl>' +
+      rows.map(r => '<dt>' + r[0] + '</dt><dd>' + escapeHtml(r[1]) + '</dd>').join('') +
+      '</dl></div>'
+    );
+  } catch (err) {
+    popup.setContent('<div class="popup">Could not load case ' + caseId +
+      '<br><small>' + escapeHtml(err.message) + '</small></div>');
+  }
+}
+
+/* ---------- theme ---------- */
+function applyTheme(dark) {
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  document.getElementById('theme-toggle').textContent = dark ? 'Light mode' : 'Dark mode';
+  if (tileLayer) tileLayer.setUrl(TILES[dark ? 'dark' : 'light']);
+  if (pointLayer) pointLayer.redraw();
+}
+
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  applyTheme(!isDark());
+});
+
+/* ---------- boot ---------- */
+async function load() {
+  const cards = [document.getElementById('queue-card'), document.getElementById('map-card')];
+  cards.forEach(c => c.classList.add('loading'));
+
+  try {
+    const [summary, queue, map] = await Promise.all([
+      getJson('/summary'),
+      getJson('/queue?top=200'),
+      getJson('/map')
+    ]);
+
+    renderTiles(summary);
+    renderQueue(queue);
+    renderLegend(map.counts);
+
+    mapData = map;
+    if (pointLayer) leafletMap.removeLayer(pointLayer);
+    pointLayer = new CanvasPoints(map.points).addTo(leafletMap);
+
+    document.getElementById('subtitle').textContent =
+      nf.format(map.plotted) + ' of ' + nf.format(map.totalRows) + ' requests plotted';
+
+    // State the cap rather than letting a short map look complete.
+    document.getElementById('footnote').textContent =
+      map.missingCoordinates > 0
+        ? nf.format(map.missingCoordinates) + ' request(s) have no usable coordinates and are not on the map. ' +
+          'Queue shows the 200 most overdue open cases.'
+        : 'Queue shows the 200 most overdue open cases.';
+  } catch (err) {
+    showError('Could not load data from ' + API, err.message);
+    document.getElementById('subtitle').textContent = 'Not connected';
+  } finally {
+    cards.forEach(c => c.classList.remove('loading'));
+  }
+}
+
+buildMap();
+applyTheme(isDark());
+load();
+</script>
+</body>
+</html>

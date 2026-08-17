@@ -1,0 +1,12 @@
+{
+    "objectscript.conn": {
+        "server": "training",
+        "ns": "USER",
+        "active": true
+    },
+    "objectscript.export": {
+        "folder": "src",
+        "addCategory": false
+    },
+    "objectscript.compileOnSave": true
+}

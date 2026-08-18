@@ -61,7 +61,7 @@ ClassMethod LoadFile(path As %String, reload As %Boolean = 1, maxRows As %Intege
 	}
 
 	Write "Loading from ", path, !
-	Set (loaded, failed, rowNum, shown) = 0
+	Set (loaded, failed, rowNum, shown, clipped) = 0
 
 	// The failure status is carried out in a variable rather than returned from
 	// inside the Catch: ObjectScript does not allow QUIT with an argument inside
@@ -96,16 +96,18 @@ ClassMethod LoadFile(path As %String, reload As %Boolean = 1, maxRows As %Intege
 			Set request.ClosedDate = ..ToTimeStamp(f(idx("closed_dt")))
 			Set request.OnTime = ..CleanText(f(idx("on_time")))
 			Set request.CaseStatus = ..CleanText(f(idx("case_status")))
-			Set request.ClosureReason = ..CleanText(f(idx("closure_reason")))
-			Set request.CaseTitle = ..CleanText(f(idx("case_title")))
+			// Free text and URLs are clipped to their declared MAXLEN. Keep these
+			// lengths in step with ProjA.ServiceRequest if you ever change them.
+			Set request.ClosureReason = ..ClipText(f(idx("closure_reason")), 4000, .clipped)
+			Set request.CaseTitle = ..ClipText(f(idx("case_title")), 250, .clipped)
 			Set request.Subject = ..CleanText(f(idx("subject")))
 			Set request.Reason = ..CleanText(f(idx("reason")))
 			Set request.RequestType = ..CleanText(f(idx("type")))
 			Set request.Queue = ..CleanText(f(idx("queue")))
 			Set request.Department = ..CleanText(f(idx("department")))
-			Set request.SubmittedPhoto = ..CleanText(f(idx("submitted_photo")))
-			Set request.ClosedPhoto = ..CleanText(f(idx("closed_photo")))
-			Set request.Location = ..CleanText(f(idx("location")))
+			Set request.SubmittedPhoto = ..ClipText(f(idx("submitted_photo")), 500, .clipped)
+			Set request.ClosedPhoto = ..ClipText(f(idx("closed_photo")), 500, .clipped)
+			Set request.Location = ..ClipText(f(idx("location")), 300, .clipped)
 			Set request.FireDistrict = ..CleanText(f(idx("fire_district")))
 			Set request.PwdDistrict = ..CleanText(f(idx("pwd_district")))
 			Set request.CityCouncilDistrict = ..CleanText(f(idx("city_council_district")))
@@ -114,7 +116,7 @@ ClassMethod LoadFile(path As %String, reload As %Boolean = 1, maxRows As %Intege
 			Set request.NeighborhoodServicesDistrict = ..CleanText(f(idx("neighborhood_services_district")))
 			Set request.Ward = ..NormalizeWard(f(idx("ward")))
 			Set request.Precinct = ..CleanText(f(idx("precinct")))
-			Set request.StreetName = ..CleanText(f(idx("location_street_name")))
+			Set request.StreetName = ..ClipText(f(idx("location_street_name")), 200, .clipped)
 			Set request.Zipcode = ..PadZip(f(idx("location_zipcode")))
 			Set request.Latitude = ..ToNumber(f(idx("latitude")))
 			Set request.Longitude = ..ToNumber(f(idx("longitude")))
@@ -156,6 +158,7 @@ ClassMethod LoadFile(path As %String, reload As %Boolean = 1, maxRows As %Intege
 	Write !, "Done. Loaded ", loaded, " row(s), ", failed, " failure(s)."
 	If failed > 10 Write " (only the first 10 were listed)"
 	Write !
+	If clipped > 0 Write clipped, " field(s) clipped to fit, each marked with [...]", !
 	Quit $$$OK
 }
 
@@ -276,6 +279,26 @@ ClassMethod ToTimeStamp(raw As %String) As %TimeStamp
 ClassMethod Pad2(number As %Integer) As %String
 {
 	Quit $Translate($Justify(number, 2), " ", "0")
+}
+
+/// CleanText, then truncate to maxLen if still too long.
+///
+/// Used only on the free-text and URL columns. Those are written by people and
+/// by generators, so any MAXLEN is a guess, and losing a whole service request
+/// because someone wrote a long closure note is the wrong trade -- a clipped
+/// note still tells you what happened. The coded columns (department, ward, the
+/// districts) deliberately do NOT go through here: they come from fixed
+/// vocabularies, so an overflow there means the extract format changed, and
+/// that should fail loudly rather than be quietly shortened.
+///
+/// The trailing marker keeps a clipped value honest, so nobody later reads a
+/// sentence that stops mid-word as the whole story.
+ClassMethod ClipText(value As %String, maxLen As %Integer, ByRef counter As %Integer) As %String
+{
+	Set value = ..CleanText(value)
+	If $Length(value) <= maxLen Quit value
+	Set counter = $Get(counter, 0) + 1
+	Quit $Extract(value, 1, maxLen - 6)_" [...]"
 }
 
 /// Trims, decodes HTML entities, and collapses runs of spaces.

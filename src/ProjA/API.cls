@@ -8,14 +8,44 @@
 /// maps a URL prefix to this dispatch class. Management Portal ->
 /// System Administration -> Security -> Applications -> Web Applications -> New:
 ///
-///     Name             /projA/api
+///     Name             /csp/projA/api
 ///     Namespace        USER
 ///     Enable           REST  (Dispatch Class = ProjA.API)
 ///     Authentication   Unauthenticated  (development only -- see below)
 ///
-/// Without that mapping every URL below returns 404 no matter how correct this
-/// class is. Unauthenticated means anyone who can reach port 52773 can read the
-/// data; fine on a laptop, not something to carry into a shared environment.
+/// Three things are needed, and each one fails with a different, unhelpful HTTP
+/// status. All three cost real time to find, so they are written down here.
+///
+/// 1. The Web Application itself. Without it, every URL below returns 404 no
+///    matter how correct this class is.
+///
+/// 2. Application Role %DB_USER, on the Application Roles tab. An unauthenticated
+///    request arrives as UnknownUser, which by default holds no role granting
+///    access to the USER database -- so IRIS cannot even READ this class in order
+///    to dispatch to it. The refusal happens before the UrlMap below is consulted,
+///    and CSP reports it as a bare 403 with an empty body. That empty body is the
+///    tell: a 403 from this class would carry JSON. The built-in /csp/user
+///    application is configured the same way, which is why it works.
+///
+/// 3. Application Role ProjA_Read, granting SQL SELECT on ProjA.ServiceRequest:
+///        CREATE ROLE ProjA_Read
+///        GRANT SELECT ON ProjA.ServiceRequest TO ProjA_Read
+///    Database access and SQL table privileges are separate systems in IRIS, so
+///    step 2 does not imply this one. Symptom: the route dispatches, the code
+///    runs, and the query throws a privilege error -- which this class does
+///    report as JSON, so the message actually names UnknownUser.
+///
+/// Two roles rather than one broad grant is deliberate: SELECT only, and scoped
+/// to callers arriving through this application rather than to UnknownUser
+/// everywhere on the instance.
+///
+/// Note the /csp/ prefix on the application name. On this instance the CSP
+/// Gateway has an explicit APP_PATH entry for /csp, and paths outside it were
+/// not being served.
+///
+/// Unauthenticated means anyone who can reach port 52773 can read the data; fine
+/// on a laptop bound to 127.0.0.1, not something to carry into a shared
+/// environment.
 Class ProjA.API Extends %CSP.REST
 {
 
@@ -133,3 +163,5 @@ ClassMethod IntParam(name As %String, default As %Integer, min As %Integer, max 
 }
 
 }
+
+

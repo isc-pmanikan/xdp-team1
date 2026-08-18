@@ -331,7 +331,9 @@ tbody tr.active { background: var(--surface-sunken); }
 <script>
 'use strict';
 
-const API = '/projA/api';
+// Leading slash matters: without it the browser treats this as relative to the
+// page's folder, so a fetch would go to /csp/user/csp/projA/api/summary.
+const API = '/csp/projA/api';
 
 /* State codes must match the CASE expression in ProjA.ServiceRequest.MapData().
    Radius is deliberately ordered: closed recedes, breached dominates, and the
@@ -376,12 +378,17 @@ async function getJson(path) {
   try {
     payload = JSON.parse(text);
   } catch (e) {
-    // An IRIS HTML error page or a 404 from a missing Web Application mapping
-    // lands here. Say which, rather than "unexpected token <".
-    throw new Error('Non-JSON response (HTTP ' + response.status + '). ' +
-      (response.status === 404
-        ? 'Is the /projA/api Web Application created and mapped to ProjA.API?'
-        : text.slice(0, 200)));
+    // An IRIS HTML error page, or an empty body from CSP, lands here. Name the
+    // likely cause rather than letting it surface as "unexpected token <".
+    // Both of these were real failures during setup, so they are worth keeping:
+    // 404 = the URL prefix does not match a Web Application; 403 = it matches,
+    // but the requesting user cannot read the dispatch class (see API.cls).
+    const hint = response.status === 404
+      ? 'No Web Application matches ' + API + ' -- check the name in the portal.'
+      : response.status === 403
+        ? 'Web Application found but access refused. Are the Application Roles set?'
+        : text.slice(0, 200) || '(empty response body)';
+    throw new Error('Non-JSON response (HTTP ' + response.status + '). ' + hint);
   }
   if (!response.ok) throw new Error(payload.error || ('HTTP ' + response.status));
   return payload;
@@ -760,3 +767,5 @@ load();
 </script>
 </body>
 </html>
+
+Set app = ##class(Security.Applications).%OpenId("/PROJA/API")  Set app.MatchRoles = ":%DB_USER"  Write $System.Status.GetErrorText(app.%Save()), !

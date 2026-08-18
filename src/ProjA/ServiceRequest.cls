@@ -29,7 +29,12 @@ Property OnTime As %String(MAXLEN = 10);
 
 Property CaseStatus As %String(MAXLEN = 20);
 
-Property ClosureReason As %String(MAXLEN = 1000);
+/// Free text a case worker types, so its length is a property of the author
+/// rather than of the data. 1000 was a guess and three rows in this extract
+/// blew past it (max 1357). 4000 is not a better guess -- it is just headroom;
+/// the loader clips to it so an unusually chatty note can never cost a whole
+/// row again.
+Property ClosureReason As %String(MAXLEN = 4000);
 
 Property CaseTitle As %String(MAXLEN = 250);
 

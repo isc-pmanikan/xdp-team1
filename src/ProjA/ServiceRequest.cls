@@ -98,7 +98,7 @@ Index OpenedIdx On OpenedDate;
 
 Index SlaIdx On SlaTargetDate;
 
-/// The instant that every "now" in this class is measured against.
+/// Fallback for the as-of instant, used until a load has derived one.
 ///
 /// The spec says: "For date-based analysis, you may treat August 14, 2026 as the
 /// current date." Reading the wall clock instead made the numbers drift. Two
@@ -112,16 +112,58 @@ Index SlaIdx On SlaTargetDate;
 /// Midnight rather than end-of-day: a deadline falling ON August 14 has not been
 /// missed at the moment that day begins. 351 cases have a target that day, so the
 /// choice is worth stating rather than leaving to whoever reads the SQL.
+///
+/// RefreshAsOf() derives this same value from the Base extract unaided -- the
+/// latest activity there is 2026-08-13 22:30 and the midnight after it is
+/// 2026-08-14 00:00 -- so the derived rule and the spec's date agree, and this
+/// literal only serves an empty table.
 Parameter ASOF = "2026-08-14 00:00:00";
 
-/// ..#ASOF as a SQL literal, for interpolation into the queries below.
+/// The instant every "now" in this class is measured against.
+///
+/// Derived from the data, not from the wall clock and not frozen at a literal:
+/// the midnight following the most recent thing that actually happened. A loader
+/// calls RefreshAsOf() to recompute it, so arriving data moves the application's
+/// notion of "now" with it. Without that, merging the Day 2 batch -- whose
+/// activity runs to 2026-08-14 22:22 -- would leave 50 new cases with a negative
+/// age and 30 closures dated in the future.
+ClassMethod AsOfStamp() As %String [ CodeMode = expression ]
+{
+$Get(^ProjA.AsOf, ..#ASOF)
+}
+
+/// Recomputes and stores the as-of instant. Returns the value now in force.
+///
+/// "Latest activity" is the newest OpenedDate or ClosedDate; SlaTargetDate is
+/// excluded because a deadline is by nature in the future (this extract has one
+/// in 2028), and a promise about tomorrow is not evidence about today. The result
+/// is rounded UP to the next midnight so that a full day of activity is always
+/// in the past: with the instant sitting mid-afternoon instead, cases opened
+/// later the same day would read as not yet having happened.
+///
+/// The greater-of comparison is done in SQL rather than ObjectScript on purpose.
+/// ObjectScript's < and > coerce their operands to numbers, so comparing two
+/// %TimeStamp strings there silently reduces both to 2026 and reports them equal.
+ClassMethod RefreshAsOf() As %String
+{
+	Set latest = ..Sql1(
+		"SELECT MAX(CASE WHEN ClosedDate IS NULL OR ClosedDate < OpenedDate "_
+		"            THEN OpenedDate ELSE ClosedDate END) "_
+		"FROM ProjA.ServiceRequest WHERE OpenedDate IS NOT NULL")
+	// An empty table says nothing about the date; leave the fallback in place.
+	If $Length(latest) < 10 Quit ..AsOfStamp()
+	Set ^ProjA.AsOf = $ZDate($ZDateH($Extract(latest, 1, 10), 3) + 1, 3)_" 00:00:00"
+	Quit ^ProjA.AsOf
+}
+
+/// The as-of instant as a SQL literal, for interpolation into the queries below.
 ///
 /// A quoted string rather than TIMESTAMP'...': %TimeStamp columns compare and
 /// DATEDIFF against a plain string literal on every version this ran on, and the
 /// literal keeps the value visible in the query text when a statement is dumped.
 ClassMethod AsOf() As %String [ CodeMode = expression ]
 {
-"'"_..#ASOF_"'"
+"'"_..AsOfStamp()_"'"
 }
 
 /// Whole hours between two %TimeStamp values, via $Horolog arithmetic so it
@@ -139,7 +181,7 @@ ClassMethod HoursBetween(fromStamp As %TimeStamp, toStamp As %TimeStamp) As %Int
 /// Hours this case has been open: to closure if closed, to now if still open.
 Method HoursOpen() As %Integer
 {
-	Set endPoint = $Select(..ClosedDate '= "": ..ClosedDate, 1: ..#ASOF)
+	Set endPoint = $Select(..ClosedDate '= "": ..ClosedDate, 1: ..AsOfStamp())
 	Quit ..HoursBetween(..OpenedDate, endPoint)
 }
 
@@ -147,8 +189,53 @@ Method HoursOpen() As %Integer
 Method HoursOverdue() As %Integer
 {
 	If ..SlaTargetDate = "" Quit ""
-	Set endPoint = $Select(..ClosedDate '= "": ..ClosedDate, 1: ..#ASOF)
+	Set endPoint = $Select(..ClosedDate '= "": ..ClosedDate, 1: ..AsOfStamp())
 	Quit ..HoursBetween(..SlaTargetDate, endPoint)
+}
+
+/// True when this case is in the attention queue as things stand: still open, it
+/// has a deadline, and that deadline has passed.
+///
+/// The same rule AttentionQueueData() applies in SQL, expressed against a single
+/// object. Both exist deliberately -- SQL for the set operation, this for asking
+/// about one case without a round trip, which is what the Day 2 merge needs in
+/// order to say which cases entered or left the queue.
+///
+/// ]] (follows) rather than <, because ObjectScript's relational operators are
+/// numeric: "2026-08-13 22:30:00" < "2026-08-14 00:00:00" coerces both sides to
+/// 2026 and answers false. These stamps are fixed-width YYYY-MM-DD HH:MM:SS, so
+/// their lexical order is their chronological order.
+Method InAttentionQueue() As %Boolean
+{
+	If ..CaseStatus '= "Open" Quit 0
+	If ..SlaTargetDate = "" Quit 0
+	Quit (..AsOfStamp() ]] ..SlaTargetDate)
+}
+
+/// Rows in the attention queue right now.
+ClassMethod AttentionQueueCount() As %Integer
+{
+	Quit +..Sql1(
+		"SELECT COUNT(*) FROM ProjA.ServiceRequest "_
+		"WHERE CaseStatus = 'Open' AND SlaTargetDate IS NOT NULL "_
+		"  AND SlaTargetDate < "_..AsOf())
+}
+
+/// The handful of numbers a data load can move, for a before-and-after read.
+///
+/// Kept here rather than in the loader because these are statements about the
+/// data; how they are laid out on a terminal is the loader's business.
+ClassMethod StateSnapshot(Output snap) As %Status
+{
+	Kill snap
+	Set snap("asOf") = ..AsOfStamp()
+	Set snap("total") = +..Sql1("SELECT COUNT(*) FROM ProjA.ServiceRequest")
+	Set snap("open") = +..Sql1(
+		"SELECT COUNT(*) FROM ProjA.ServiceRequest WHERE CaseStatus = 'Open'")
+	Set snap("closed") = +..Sql1(
+		"SELECT COUNT(*) FROM ProjA.ServiceRequest WHERE CaseStatus = 'Closed'")
+	Set snap("queue") = ..AttentionQueueCount()
+	Quit $$$OK
 }
 
 /// Runs a query and prints it with column headers.
@@ -375,7 +462,7 @@ ClassMethod SummaryData(ByRef filters) As %DynamicObject
 	// Ship the as-of instant with the counts so the UI can name the date it is
 	// measuring against. A breach count means nothing without the moment it was
 	// measured from, and a reader should not have to open the source to find it.
-	Do summary.%Set("asOf", ..#ASOF)
+	Do summary.%Set("asOf", ..AsOfStamp())
 	Quit summary
 }
 

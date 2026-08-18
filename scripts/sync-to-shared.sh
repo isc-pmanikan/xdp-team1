@@ -19,6 +19,7 @@ mkdir -p "$SHARED/src" "$SHARED/data" "$SHARED/web"
 rsync -a --delete --exclude='*.csv' "$REPO/src/" "$SHARED/src/"
 rsync -a "$REPO/web/" "$SHARED/web/"
 rsync -a "$REPO/src/Boston311-2026-Base.csv" "$SHARED/data/"
+rsync -a "$REPO/src/Boston311-2026-Day2.csv" "$SHARED/data/"
 
 # World-readable so the IRIS uid can traverse and read; not writable by it.
 chmod -R a+rX "$SHARED"

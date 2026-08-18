@@ -10,52 +10,7 @@
       crossorigin="">
 
 <style>
-/* ---------------------------------------------------------------------------
-   Colour roles. Every value below is validated, not chosen by eye:
 
-     state-ontime  x  state-breached   CVD dE 23.8 light / 25.7 dark
-                                       normal-vision dE 31.6 / 31.9
-                                       both clear 3:1 on the basemap
-
-   Green was the obvious first choice for "closed" and it FAILED: green #0ca30c
-   against red #d03b3b measures dE 4.1 under deuteranopia, far below the 6.0
-   floor -- the classic red/green trap. Closed cases are context rather than
-   status (11k of 25k rows, none actionable), so they are recessive grey and
-   colour is spent only on the two states that mean something. That also makes
-   the encoding a polarity -- within SLA vs breached -- which is exactly the
-   blue<->red diverging pair with a neutral midpoint.
-
-   ---- chart series (opened vs closed) ----
-
-   The trend chart needs two series, and this page has no spare hue for the
-   second one. Everything was measured, not judged:
-
-     amber  #b8720d x red #d03b3b   dE 4.7  deuteranopia  -- confusable with the
-                                    reserved "past SLA" red, on a page where both
-                                    are visible at once
-     violet #7b5bc4 x blue #2a78d6  dE 3.0  deuteranopia
-     teal   #0f8f8f x blue #2a78d6  dE 13.8 deuteranopia, and 14.4 even to
-                                    normal vision -- below the 15.0 floor
-     grey   #898781                 chroma 0.009: reads as "not a series" next to
-                                    a saturated line, and "closed" carries half
-                                    the story here rather than being context
-
-   So identity is not carried by hue at all. Both series are ONE hue in two
-   lightness steps, and the primary channel is bar width with the narrower bar
-   nested inside the wider one on a shared baseline: demand (opened) is the wide
-   bar, work done (closed) the narrow one, and the visible gap between them IS
-   the growth in backlog. Width, nesting, lightness and the legend give four
-   channels, none of them hue-dependent:
-
-     light  #2a78d6 x #14406f   CVD dE 21.2, normal dE 21.8, both >= 3:1 on surface
-     dark   #3987e5 x #b3d0f5   CVD dE 22.9, normal dE 24.8, both >= 3:1 on surface
-
-   Both pairs sit outside the categorical lightness band, and the second step
-   falls under the chroma floor, which for a categorical palette would be a
-   defect. Here it is the design: a near-white surface cannot hold a light step
-   at 3:1 contrast AND inside the band, and the band exists to give competing
-   identity hues equal weight -- which is exactly what these two are not.
-   --------------------------------------------------------------------------- */
 :root {
   color-scheme: light;
   --surface-1: #fcfcfb;
@@ -1501,8 +1456,8 @@ async function load() {
         nf.format(results.total) + ' matches; the charts and tiles cover all of them.');
     }
     notes.push('Overdue is measured live against each SLA target as of ' +
-      (summary.asOf || '').slice(0, 10) + ', the reference date the dataset is built ' +
-      'around, and is not read from the source ON_TIME flag.');
+      (summary.asOf || '').slice(0, 10) + ', the midnight following the latest activity ' +
+      'in the loaded data, and is not read from the source ON_TIME flag.');
     el('footnote').textContent = notes.join(' ');
   } catch (err) {
     showError('Could not load data from ' + API, err.message);

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Boston 311 &mdash; Attention Queue</title>
+<title>Boston 311 &mdash; Service Request Explorer</title>
 
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
@@ -24,6 +24,37 @@
    colour is spent only on the two states that mean something. That also makes
    the encoding a polarity -- within SLA vs breached -- which is exactly the
    blue<->red diverging pair with a neutral midpoint.
+
+   ---- chart series (opened vs closed) ----
+
+   The trend chart needs two series, and this page has no spare hue for the
+   second one. Everything was measured, not judged:
+
+     amber  #b8720d x red #d03b3b   dE 4.7  deuteranopia  -- confusable with the
+                                    reserved "past SLA" red, on a page where both
+                                    are visible at once
+     violet #7b5bc4 x blue #2a78d6  dE 3.0  deuteranopia
+     teal   #0f8f8f x blue #2a78d6  dE 13.8 deuteranopia, and 14.4 even to
+                                    normal vision -- below the 15.0 floor
+     grey   #898781                 chroma 0.009: reads as "not a series" next to
+                                    a saturated line, and "closed" carries half
+                                    the story here rather than being context
+
+   So identity is not carried by hue at all. Both series are ONE hue in two
+   lightness steps, and the primary channel is bar width with the narrower bar
+   nested inside the wider one on a shared baseline: demand (opened) is the wide
+   bar, work done (closed) the narrow one, and the visible gap between them IS
+   the growth in backlog. Width, nesting, lightness and the legend give four
+   channels, none of them hue-dependent:
+
+     light  #2a78d6 x #14406f   CVD dE 21.2, normal dE 21.8, both >= 3:1 on surface
+     dark   #3987e5 x #b3d0f5   CVD dE 22.9, normal dE 24.8, both >= 3:1 on surface
+
+   Both pairs sit outside the categorical lightness band, and the second step
+   falls under the chroma floor, which for a categorical palette would be a
+   defect. Here it is the design: a near-white surface cannot hold a light step
+   at 3:1 contrast AND inside the band, and the band exists to give competing
+   identity hues equal weight -- which is exactly what these two are not.
    --------------------------------------------------------------------------- */
 :root {
   color-scheme: light;
@@ -40,6 +71,10 @@
   --state-ontime: #2a78d6;
   --state-breached: #d03b3b;
 
+  /* Chart series: demand = wide bar, done = narrow bar nested inside it. */
+  --chart-demand: #2a78d6;
+  --chart-done: #14406f;
+
   --font: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 @media (prefers-color-scheme: dark) {
@@ -54,6 +89,10 @@
     --hairline: #2c2c2a;
     --border: rgba(255, 255, 255, 0.10);
     --state-ontime: #3987e5;
+    /* Dark mode re-steps rather than inverting: the second step goes lighter,
+       because a step darker than #3987e5 disappears against this surface. */
+    --chart-demand: #3987e5;
+    --chart-done: #b3d0f5;
     /* status critical is fixed, never themed */
   }
 }
@@ -68,6 +107,8 @@
   --hairline: #2c2c2a;
   --border: rgba(255, 255, 255, 0.10);
   --state-ontime: #3987e5;
+  --chart-demand: #3987e5;
+  --chart-done: #b3d0f5;
 }
 
 * { box-sizing: border-box; }
@@ -93,11 +134,12 @@ body {
 }
 .masthead h1 {
   margin: 0;
-  font-size: 19px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  /* Stays a clear step above the 18px card titles below it. */
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
 }
-.masthead p { margin: 2px 0 0; color: var(--text-secondary); font-size: 13px; }
+.masthead p { margin: 3px 0 0; color: var(--text-secondary); font-size: 13.5px; }
 
 button {
   font-family: inherit;
@@ -143,6 +185,125 @@ button:hover { color: var(--text-primary); border-color: var(--text-muted); }
 .tile.hero { border-left: 3px solid var(--state-breached); }
 .tile.hero .value { color: var(--state-breached); }
 
+/* ---- filter bar ----
+   Above everything it filters, so the controls read as governing the whole page
+   rather than any single card. Two rows on purpose: the search box gets a line of
+   its own at 16px, because it is the control people reach for first, and the
+   dimension filters sit under it rather than competing with it for width. */
+.filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px 16px;
+  margin-bottom: 16px;
+}
+.filterbar .barlabel {
+  flex: 1 1 100%;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 700;
+  margin-bottom: -2px;
+}
+.filterbar input, .filterbar select {
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text-primary);
+  background: var(--surface-page);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  max-width: 100%;
+}
+.filterbar select { min-width: 160px; }
+/* Full-width and a size larger than everything else in the bar. */
+.filterbar input[type="search"] {
+  flex: 1 1 100%;
+  font-size: 16px;
+  padding: 11px 14px;
+}
+.filterbar input[type="date"] { color: var(--text-secondary); }
+.filterbar :focus-visible { outline: 2px solid var(--state-ontime); outline-offset: 1px; }
+/* A control holding a value gets an accent edge, so it is obvious at a glance
+   which filters are narrowing the page. */
+.filterbar .set { border-color: var(--state-ontime); border-width: 2px; }
+.filterbar .fgroup {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+.filterbar .push { flex: 1 1 auto; }
+.filterbar #f-reset { font-size: 14px; padding: 9px 14px; }
+
+/* ---- charts ---- */
+.chartwrap { padding: 6px 14px 12px; }
+.chartwrap + .chartwrap { border-top: 1px solid var(--hairline); }
+.chartwrap .caption {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin: 6px 0 2px;
+}
+svg.chart { display: block; width: 100%; }
+.chart .gridline { stroke: var(--hairline); stroke-width: 1; }
+.chart .zeroline { stroke: var(--text-muted); stroke-width: 1; opacity: 0.5; }
+.chart .tick { fill: var(--text-muted); font-size: 10px; }
+.chart .barDemand { fill: var(--chart-demand); }
+.chart .barDone { fill: var(--chart-done); }
+.chart .line { fill: none; stroke: var(--text-primary); stroke-width: 2; }
+.chart .area { fill: var(--text-primary); opacity: 0.06; }
+.chart .cursor { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 2 3; }
+.chart .dot {
+  fill: var(--text-primary);
+  /* 2px surface ring keeps the marker separable where the line doubles back */
+  stroke: var(--surface-1);
+  stroke-width: 2;
+}
+.chart .hit { fill: transparent; cursor: crosshair; }
+.chart .vlabel {
+  fill: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+}
+/* Non-interactive chart legend: same swatch vocabulary as the map legend, but
+   the shapes echo the marks -- wide bar and narrow bar, not two dots. */
+.chartlegend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary); }
+.chartlegend span { display: inline-flex; align-items: center; gap: 6px; }
+.chartlegend i { display: inline-block; border-radius: 2px; }
+.chartlegend i.demand { width: 13px; height: 9px; background: var(--chart-demand); }
+.chartlegend i.done { width: 6px; height: 9px; background: var(--chart-done); }
+
+/* ---- resolution list ---- */
+.reslist { width: 100%; }
+.reslist td { vertical-align: middle; }
+.medtrack {
+  background: var(--surface-sunken);
+  border-radius: 5px;
+  height: 9px;
+  min-width: 60px;
+}
+/* Rounded data end only; the baseline end stays square and anchored. */
+.medbar { background: var(--chart-demand); height: 9px; border-radius: 0 4px 4px 0; }
+/* A bar longer than the track's scale ends in a point rather than a rounded cap,
+   so "this one runs off the end" is visible in the mark itself. */
+.medbar.over {
+  border-radius: 0;
+  clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 50%, calc(100% - 5px) 100%, 0 100%);
+}
+
 /* ---- layout ---- */
 .grid {
   display: grid;
@@ -167,8 +328,10 @@ button:hover { color: var(--text-primary); border-color: var(--text-muted); }
   border-bottom: 1px solid var(--hairline);
   flex-wrap: wrap;
 }
-.card h2 { margin: 0; font-size: 13px; font-weight: 600; }
-.card .hint { font-size: 12px; color: var(--text-muted); }
+/* Card titles carry the page's structure, so they are sized to be read across
+   the room in a demo rather than to sit quietly above the data. */
+.card h2 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+.card .hint { font-size: 12.5px; color: var(--text-muted); }
 
 /* Refetch holds the previous render at reduced opacity -- no skeleton flash,
    no layout jump. */
@@ -274,13 +437,50 @@ tbody tr.active { background: var(--surface-sunken); }
 
 <div class="masthead">
   <div>
-    <h1>Boston 311 &mdash; Attention Queue</h1>
+    <h1>Boston 311 &mdash; Service Request Explorer</h1>
     <p id="subtitle">Loading&hellip;</p>
   </div>
   <button id="theme-toggle" type="button">Dark mode</button>
 </div>
 
 <div id="error-slot"></div>
+
+<form class="filterbar" id="filterbar" autocomplete="off">
+  <div class="barlabel">Search &amp; filter every panel on this page</div>
+  <input type="search" id="f-text" placeholder="Search title, type, street or case ID"
+         aria-label="Search requests">
+  <select id="f-neighborhood" aria-label="Neighborhood"><option value="">All neighborhoods</option></select>
+  <select id="f-department" aria-label="Department"><option value="">All departments</option></select>
+  <select id="f-reason" aria-label="Reason"><option value="">All reasons</option></select>
+  <select id="f-sla" aria-label="SLA state">
+    <!-- Any SLA state is the default on purpose. The attention queue is still
+         the first thing on screen -- the hero tile counts it and the list is
+         sorted worst-overdue-first -- but landing with a filter already applied
+         made every other panel read zero: no closed cases to time, no work-done
+         bars in the trend. One click narrows to the queue alone. -->
+    <option value="">Any SLA state</option>
+    <option value="breached">Open &amp; past SLA</option>
+    <option value="withinsla">Open, still within SLA</option>
+    <option value="missed">Closed late</option>
+    <option value="metsla">Closed on time</option>
+    <option value="nosla">No SLA target</option>
+  </select>
+  <span class="fgroup">Opened
+    <input type="date" id="f-from" aria-label="Opened from">
+    <input type="date" id="f-to" aria-label="Opened to">
+  </span>
+  <span class="fgroup">Sort
+    <select id="f-sort" aria-label="Sort order">
+      <option value="urgency">Most overdue</option>
+      <option value="newest">Newest</option>
+      <option value="oldest">Oldest</option>
+      <option value="neighborhood">Neighborhood</option>
+      <option value="department">Department</option>
+    </select>
+  </span>
+  <span class="push"></span>
+  <button type="button" id="f-reset">Reset filters</button>
+</form>
 
 <div class="tiles" id="tiles"></div>
 
@@ -289,8 +489,8 @@ tbody tr.active { background: var(--surface-sunken); }
   <section class="card" id="queue-card">
     <header>
       <div>
-        <h2>Needs attention</h2>
-        <div class="hint">Open &amp; past SLA target &middot; worst first</div>
+        <h2 id="queue-title">Needs attention</h2>
+        <div class="hint" id="queue-sub">Open &amp; past SLA target &middot; worst first</div>
       </div>
       <span class="hint" id="queue-count"></span>
     </header>
@@ -300,7 +500,7 @@ tbody tr.active { background: var(--surface-sunken); }
           <tr>
             <th>Case</th>
             <th class="num">Overdue</th>
-            <th class="num">Age</th>
+            <th class="num">Age / took</th>
           </tr>
         </thead>
         <tbody id="queue-body"></tbody>
@@ -320,6 +520,68 @@ tbody tr.active { background: var(--surface-sunken); }
   </section>
 
 </div>
+
+<section class="card" id="trend-card" style="margin-top:12px">
+  <header>
+    <div>
+      <h2>Demand vs. work done over time</h2>
+      <div class="hint" id="trend-sub">&nbsp;</div>
+    </div>
+    <div class="chartlegend">
+      <span><i class="demand"></i>Opened</span>
+      <span><i class="done"></i>Closed</span>
+    </div>
+    <div class="legend">
+      <button type="button" data-bucket="day" aria-pressed="false">Day</button>
+      <button type="button" data-bucket="week" aria-pressed="true">Week</button>
+      <button type="button" data-bucket="month" aria-pressed="false">Month</button>
+    </div>
+  </header>
+  <div class="chartwrap">
+    <svg class="chart" id="trend-chart" role="img" aria-label="Requests opened and closed per period"></svg>
+  </div>
+  <div class="chartwrap">
+    <div class="caption">Net change in open cases since the first loaded day</div>
+    <svg class="chart" id="backlog-chart" role="img" aria-label="Cumulative net change in open cases"></svg>
+  </div>
+</section>
+
+<section class="card" id="resolution-card" style="margin-top:12px">
+  <header>
+    <div>
+      <h2>How long closed cases took</h2>
+      <div class="hint" id="resolution-sub">&nbsp;</div>
+    </div>
+    <span class="fgroup">Group by
+      <select id="f-groupby" aria-label="Group resolution times by">
+        <option value="department">Department</option>
+        <option value="neighborhood">Neighborhood</option>
+        <option value="reason">Reason</option>
+        <option value="requestType">Request type</option>
+        <option value="source">Source</option>
+      </select>
+    </span>
+  </header>
+  <div class="chartwrap">
+    <div class="caption">All closed cases by time to close</div>
+    <svg class="chart" id="duration-chart" role="img" aria-label="Distribution of time to close"></svg>
+  </div>
+  <div class="chartwrap" style="padding-left:0;padding-right:0">
+    <table class="reslist">
+      <thead>
+        <tr>
+          <th>Group</th>
+          <th class="num">Closed</th>
+          <th id="medhead">Median time to close</th>
+          <th class="num">Median</th>
+          <th class="num">90th pct</th>
+          <th class="num">Late</th>
+        </tr>
+      </thead>
+      <tbody id="resolution-body"></tbody>
+    </table>
+  </div>
+</section>
 
 <p class="footnote" id="footnote"></p>
 <div class="hovertip" id="hovertip"></div>
@@ -349,14 +611,94 @@ const PAINT_ORDER = [0, 1, 2];
 const enabled = new Set([0, 1, 2]);
 const nf = new Intl.NumberFormat('en-US');
 
+/* Punctuation as escapes, not as literal bytes. IRIS serves static files with
+   "Content-Type: text/html; charset=ISO-8859-1", and a Content-Type header wins
+   over <meta charset>, so every literal middot in this file reached the browser
+   as two mojibake characters. Markup can say &middot;/&mdash;; strings built in
+   JS cannot, and these escapes are charset-independent either way. */
+
 let mapData = null;
 let queueRows = [];
 let pointLayer = null;
 let leafletMap = null;
 let tileLayer = null;
 
+let trendBucket = 'week';
+let trendData = null;
+let resolutionData = null;
+
+function el(id) { return document.getElementById(id); }
+
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+/* ---------- filters ----------
+   One filter state, one query string, every endpoint. The tiles, the list, the
+   map and both charts are therefore always describing the same set of rows --
+   the failure mode worth designing out is a tile reading 25,000 above a table
+   showing one neighborhood. */
+function currentFilters() {
+  return {
+    text: el('f-text').value.trim(),
+    neighborhood: el('f-neighborhood').value,
+    department: el('f-department').value,
+    reason: el('f-reason').value,
+    sla: el('f-sla').value,
+    openedFrom: el('f-from').value,
+    openedTo: el('f-to').value
+  };
+}
+
+function filterQuery(extra) {
+  const params = new URLSearchParams();
+  const f = currentFilters();
+  Object.keys(f).forEach(k => { if (f[k]) params.set(k, f[k]); });
+  if (extra) Object.keys(extra).forEach(k => params.set(k, extra[k]));
+  const query = params.toString();
+  return query ? '?' + query : '';
+}
+
+function activeFilterCount() {
+  const f = currentFilters();
+  return Object.keys(f).filter(k => f[k]).length;
+}
+
+/* Accent edge on any control currently narrowing the page. */
+function markSetControls() {
+  ['f-text', 'f-neighborhood', 'f-department', 'f-reason', 'f-sla', 'f-from', 'f-to']
+    .forEach(id => { el(id).classList.toggle('set', !!el(id).value); });
+}
+
+function fillSelect(id, options, allLabel) {
+  const select = el(id);
+  const previous = select.value;
+  select.innerHTML = '<option value="">' + allLabel + '</option>' +
+    options.map(o =>
+      '<option value="' + escapeHtml(o.value) + '">' +
+      escapeHtml(o.value) + ' (' + nf.format(o.n) + ')</option>'
+    ).join('');
+  // Restore the selection: the option list is rebuilt on load, and dropping the
+  // user's choice would silently widen the view.
+  select.value = previous;
+}
+
+async function loadFilterOptions() {
+  const options = await getJson('/filters');
+  fillSelect('f-neighborhood', options.neighborhood || [], 'All neighborhoods');
+  fillSelect('f-department', options.department || [], 'All departments');
+  fillSelect('f-reason', options.reason || [], 'All reasons');
+
+  // Bound the date pickers to the loaded window rather than offering years that
+  // could only ever return nothing.
+  const span = options.dateRange || {};
+  if (span.earliest && span.latest) {
+    const first = span.earliest.slice(0, 10), last = span.latest.slice(0, 10);
+    ['f-from', 'f-to'].forEach(id => {
+      el(id).min = first;
+      el(id).max = last;
+    });
+  }
 }
 
 function showError(message, detail) {
@@ -405,17 +747,17 @@ function parseStamp(value) {
 }
 function shortDate(value) {
   const d = parseStamp(value);
-  return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+  return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '\u2014';
 }
 function fullDate(value) {
   const d = parseStamp(value);
   return d ? d.toLocaleString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'
-  }) : '—';
+  }) : '\u2014';
 }
 function humanHours(hours) {
   const h = Number(hours);
-  if (!isFinite(h)) return '—';
+  if (!isFinite(h)) return '\u2014';
   if (h < 48) return h + 'h';
   const days = Math.floor(h / 24);
   return days < 60 ? days + 'd' : Math.floor(days / 30) + 'mo';
@@ -430,11 +772,18 @@ function renderTiles(summary) {
   const noSla = +summary.noSlaCount || 0;
   const pct = openCount ? Math.round(1000 * breached / openCount) / 10 : 0;
 
+  // Every count here is filtered, so the last tile must not claim to be the
+  // table size. "Total loaded / rows in IRIS" beside a filtered 12,231 read as
+  // "only 12,231 rows were ever loaded", which is a lie about the dataset.
+  const filtered = activeFilterCount() > 0;
+
   const tiles = [
     { label: 'Past SLA, still open', value: breached, sub: pct + '% of open cases', hero: true },
     { label: 'Open', value: openCount, sub: 'awaiting resolution' },
     { label: 'Closed', value: closed, sub: 'resolved' },
-    { label: 'Total loaded', value: total, sub: 'rows in IRIS' },
+    filtered
+      ? { label: 'Matching', value: total, sub: 'rows selected by the filters' }
+      : { label: 'Total loaded', value: total, sub: 'rows in IRIS' },
     { label: 'No SLA target', value: noSla, sub: 'excluded from overdue' }
   ];
 
@@ -447,29 +796,63 @@ function renderTiles(summary) {
   ).join('');
 }
 
-/* ---------- attention queue ---------- */
-function renderQueue(rows) {
+/* ---------- results list ----------
+   The same table serves the attention queue and any search: the queue is simply
+   the default filter (open, past SLA, worst first). Two separate tables would
+   have meant two code paths and an obvious question about which one was
+   authoritative. */
+function renderQueue(payload) {
+  const rows = payload.rows || [];
+  const total = payload.total != null ? +payload.total : rows.length;
   queueRows = rows;
-  document.getElementById('queue-count').textContent = nf.format(rows.length) + ' shown';
+
+  // Say what is being withheld. "200 shown" beside 1,204 matches is honest;
+  // "200" on its own reads as the whole answer.
+  el('queue-count').textContent = total > rows.length
+    ? nf.format(rows.length) + ' of ' + nf.format(total) + ' matches'
+    : nf.format(total) + (total === 1 ? ' match' : ' matches');
+
+  const breachedOnly = el('f-sla').value === 'breached';
+  const urgencyFirst = el('f-sort').value === 'urgency';
+  el('queue-title').textContent = activeFilterCount() ? 'Search results' : 'Needs attention';
+  el('queue-sub').textContent = breachedOnly
+    ? 'Open & past SLA target \u00B7 worst first'
+    : urgencyFirst
+      ? 'Overdue open cases first \u00B7 then by SLA deadline'
+      : 'Matching requests \u00B7 ' + (el('f-sort').selectedOptions[0] || {}).text;
 
   if (!rows.length) {
-    document.getElementById('queue-body').innerHTML =
-      '<tr><td colspan="3" class="meta">Nothing past its SLA target. ' +
-      'If the table is empty and the tiles read zero, the CSV has not been loaded yet ' +
-      '&mdash; run <code>Do ##class(ProjA.Loader).Run()</code>.</td></tr>';
+    el('queue-body').innerHTML =
+      '<tr><td colspan="3" class="meta">' +
+      (activeFilterCount()
+        ? 'No requests match these filters.'
+        : 'Nothing past its SLA target. If the table is empty and the tiles read zero, ' +
+          'the CSV has not been loaded yet &mdash; run <code>Do ##class(ProjA.Loader).Run()</code>.') +
+      '</td></tr>';
     return;
   }
 
-  document.getElementById('queue-body').innerHTML = rows.map((r, i) =>
+  el('queue-body').innerHTML = rows.map((r, i) =>
     '<tr data-index="' + i + '">' +
       '<td>' +
         '<div class="title-cell">' + escapeHtml(r.title || r.requestType || 'Untitled') + '</div>' +
         '<div class="meta">' + escapeHtml(r.neighborhood || 'Unknown area') +
-          ' &middot; ' + escapeHtml(r.department || '—') +
-          ' &middot; opened ' + shortDate(r.openedDate) + '</div>' +
+          ' &middot; ' + escapeHtml(r.department || '\u2014') +
+          ' &middot; opened ' + shortDate(r.openedDate) +
+          (r.status === 'Closed' ? ' &middot; closed ' + shortDate(r.closedDate) : '') +
+        '</div>' +
       '</td>' +
-      '<td class="num overdue">' + humanHours(r.hoursOverdue) + '</td>' +
-      '<td class="num meta">' + (r.daysOpen != null ? r.daysOpen + 'd' : '—') + '</td>' +
+      // Overdue only means something for an open case with a deadline it has
+      // already passed; anything else gets an em dash rather than a negative
+      // number dressed up as urgency.
+      '<td class="num' + (r.hoursOverdue > 0 && r.status !== 'Closed' ? ' overdue' : ' meta') + '">' +
+        (r.hoursOverdue > 0 && r.status !== 'Closed' ? humanHours(r.hoursOverdue) : '\u2014') +
+      '</td>' +
+      '<td class="num meta">' +
+        (r.status === 'Closed'
+          ? (r.hoursToClose != null ? humanHours(r.hoursToClose) : '\u2014')
+          : (r.daysOpen != null ? r.daysOpen + 'd' : '\u2014')) +
+      '</td>' +
     '</tr>'
   ).join('');
 
@@ -690,7 +1073,7 @@ async function openDetail(caseId, latlng) {
   try {
     const d = await getJson('/request/' + caseId);
     const rows = [
-      ['Status', d.status + (d.onTime ? ' · ' + d.onTime : '')],
+      ['Status', d.status + (d.onTime ? ' \u00B7 ' + d.onTime : '')],
       ['Type', d.requestType || d.reason],
       ['Department', d.department],
       ['Location', d.location],
@@ -712,6 +1095,340 @@ async function openDetail(caseId, latlng) {
   }
 }
 
+/* ---------- chart primitives ----------
+   Hand-rolled SVG rather than a charting library. Two charts do not justify the
+   dependency, and the mark specs this page follows -- 4px rounded data ends
+   anchored to the baseline, a 2px surface gap between adjacent bars, a 2px
+   surface ring where marks overlap -- are quicker to hit directly than to
+   override in someone else's defaults. */
+
+/* Bar with only its top corners rounded, so the data end is soft and the
+   baseline end stays square and anchored. */
+function barTop(x, y, w, h, r) {
+  if (h <= 0 || w <= 0) return '';
+  const rr = Math.max(0, Math.min(r, w / 2, h));
+  return 'M' + x + ',' + (y + h) + 'V' + (y + rr) +
+    'a' + rr + ',' + rr + ' 0 0 1 ' + rr + ',' + (-rr) +
+    'H' + (x + w - rr) +
+    'a' + rr + ',' + rr + ' 0 0 1 ' + rr + ',' + rr +
+    'V' + (y + h) + 'Z';
+}
+
+/* Round axis maxima to something a person would choose, so the top gridline is
+   a readable number rather than 13,555.
+   The maximum is built from the TICK step and the number of gridlines, not
+   rounded on its own: rounding a 2,560 peak up to the next nice number gave
+   5,000, and the tallest bar then used half the plot height for no reason. Four
+   ticks of 800 reach 3,200 instead, which is both readable and close to the
+   data. */
+function niceMax(value, divisions) {
+  if (!(value > 0)) return 1;
+  const ticks = divisions || 4;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(value / ticks)));
+  const steps = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+  for (let i = 0; i < steps.length; i++) {
+    const candidate = steps[i] * magnitude * ticks;
+    if (candidate >= value) return candidate;
+  }
+  return 10 * magnitude * ticks;
+}
+
+function chartWidth(svg) {
+  return Math.max(320, (svg.parentElement.clientWidth || 800) - 28);
+}
+
+function frameSvg(svg, width, height) {
+  svg.setAttribute('width', width);
+  svg.setAttribute('height', height);
+  svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+}
+
+/* Short label for a bucket key: "2026-06-08" -> "Jun 8", "2026-06" -> "Jun". */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function bucketLabel(key) {
+  const parts = key.split('-');
+  const month = MONTHS[+parts[1] - 1] || '';
+  return parts.length < 3 ? month : month + ' ' + (+parts[2]);
+}
+
+/* ---------- trends ---------- */
+
+/* Both trend charts share one hover layer: the tooltip answers opened, closed,
+   net and cumulative at once, so there is no need to hunt between two charts to
+   assemble a single period's story. */
+function trendTooltipHtml(point) {
+  const net = point.netChange;
+  return '<strong>' + bucketLabel(point.bucket) + '</strong><br>' +
+    'Opened ' + nf.format(point.opened) + ' &middot; closed ' + nf.format(point.closed) + '<br>' +
+    (net >= 0 ? 'Backlog grew by ' + nf.format(net) : 'Backlog fell by ' + nf.format(-net)) +
+    ' &middot; running ' + (point.cumulativeNet >= 0 ? '+' : '') + nf.format(point.cumulativeNet);
+}
+
+function bindChartHover(svg, points, xFor, bandWidth, height) {
+  const tip = el('hovertip');
+  svg.querySelectorAll('.hit').forEach(rect => {
+    const index = +rect.dataset.index;
+    rect.addEventListener('mousemove', event => {
+      tip.innerHTML = trendTooltipHtml(points[index]);
+      tip.style.display = 'block';
+      tip.style.left = (event.clientX + 14) + 'px';
+      tip.style.top = (event.clientY + 14) + 'px';
+      const cursor = svg.querySelector('.cursor');
+      if (cursor) {
+        cursor.setAttribute('x1', xFor(index) + bandWidth / 2);
+        cursor.setAttribute('x2', xFor(index) + bandWidth / 2);
+        cursor.style.display = 'block';
+      }
+    });
+    rect.addEventListener('mouseleave', () => {
+      tip.style.display = 'none';
+      const cursor = svg.querySelector('.cursor');
+      if (cursor) cursor.style.display = 'none';
+    });
+  });
+}
+
+function drawTrend(data) {
+  const svg = el('trend-chart');
+  const points = (data && data.series) || [];
+  const width = chartWidth(svg), height = 200;
+  const padL = 46, padR = 10, padT = 14, padB = 24;
+  const plotW = width - padL - padR, plotH = height - padT - padB;
+  frameSvg(svg, width, height);
+
+  if (!points.length) {
+    svg.innerHTML = '<text class="tick" x="' + padL + '" y="' + (height / 2) + '">' +
+      'No requests match these filters.</text>';
+    return;
+  }
+
+  const top = niceMax(Math.max(1, ...points.map(p => Math.max(p.opened, p.closed))), 4);
+  const band = plotW / points.length;
+  const yFor = value => padT + plotH - (value / top) * plotH;
+  const xFor = index => padL + index * band;
+
+  // 2px of surface between neighbouring buckets; the inner bar is narrower so
+  // the nesting reads as one measure inside another.
+  const demandW = Math.max(3, Math.min(band - 2, 46));
+  const doneW = Math.max(2, demandW * 0.44);
+
+  let parts = [];
+
+  // Gridlines first so every mark sits above them.
+  for (let t = 0; t <= 4; t++) {
+    const value = top * t / 4, y = yFor(value);
+    parts.push('<line class="' + (t === 0 ? 'zeroline' : 'gridline') + '" x1="' + padL +
+      '" y1="' + y + '" x2="' + (width - padR) + '" y2="' + y + '"/>');
+    parts.push('<text class="tick" x="' + (padL - 7) + '" y="' + (y + 3) +
+      '" text-anchor="end">' + nf.format(Math.round(value)) + '</text>');
+  }
+
+  parts.push('<line class="cursor" y1="' + padT + '" y2="' + (padT + plotH) +
+    '" x1="0" x2="0" style="display:none"/>');
+
+  points.forEach((p, i) => {
+    const left = xFor(i) + (band - demandW) / 2;
+    parts.push('<path class="barDemand" d="' +
+      barTop(left, yFor(p.opened), demandW, plotH - (yFor(p.opened) - padT), 4) + '"/>');
+    parts.push('<path class="barDone" d="' +
+      barTop(left + (demandW - doneW) / 2, yFor(p.closed), doneW,
+             plotH - (yFor(p.closed) - padT), 4) + '"/>');
+  });
+
+  // Labels thinned to roughly ten, so they never collide.
+  const step = Math.ceil(points.length / 10);
+  points.forEach((p, i) => {
+    if (i % step) return;
+    parts.push('<text class="tick" x="' + (xFor(i) + band / 2) + '" y="' + (height - 7) +
+      '" text-anchor="middle">' + bucketLabel(p.bucket) + '</text>');
+  });
+
+  // Hit targets last and full height, so they sit above the marks and are far
+  // easier to hover than a thin bar.
+  points.forEach((p, i) => {
+    parts.push('<rect class="hit" data-index="' + i + '" x="' + xFor(i) + '" y="' + padT +
+      '" width="' + band + '" height="' + plotH + '"/>');
+  });
+
+  svg.innerHTML = parts.join('');
+  bindChartHover(svg, points, xFor, band, height);
+}
+
+function drawBacklog(data) {
+  const svg = el('backlog-chart');
+  const points = (data && data.series) || [];
+  const width = chartWidth(svg), height = 104;
+  const padL = 46, padR = 10, padT = 10, padB = 16;
+  const plotW = width - padL - padR, plotH = height - padT - padB;
+  frameSvg(svg, width, height);
+
+  if (!points.length) { svg.innerHTML = ''; return; }
+
+  const values = points.map(p => p.cumulativeNet);
+  // One gridline above zero here, so the step and the maximum are the same thing.
+  const top = niceMax(Math.max(1, ...values), 1);
+  // Zero stays on the axis even when the line never goes near it: a backlog
+  // chart that silently rescales its baseline hides whether the number is a
+  // little positive or enormous.
+  const low = Math.min(0, ...values);
+  const bottom = low < 0 ? -niceMax(-low, 1) : 0;
+  const span = top - bottom;
+  const band = plotW / points.length;
+  const yFor = value => padT + plotH - ((value - bottom) / span) * plotH;
+  const xFor = index => padL + index * band;
+  const cx = index => xFor(index) + band / 2;
+
+  let parts = [];
+  [top, bottom].forEach(value => {
+    parts.push('<line class="' + (value === 0 ? 'zeroline' : 'gridline') + '" x1="' + padL +
+      '" y1="' + yFor(value) + '" x2="' + (width - padR) + '" y2="' + yFor(value) + '"/>');
+    parts.push('<text class="tick" x="' + (padL - 7) + '" y="' + (yFor(value) + 3) +
+      '" text-anchor="end">' + (value > 0 ? '+' : '') + nf.format(value) + '</text>');
+  });
+  if (bottom < 0) {
+    parts.push('<line class="zeroline" x1="' + padL + '" y1="' + yFor(0) +
+      '" x2="' + (width - padR) + '" y2="' + yFor(0) + '"/>');
+  }
+
+  const line = points.map((p, i) => (i ? 'L' : 'M') + cx(i) + ',' + yFor(p.cumulativeNet)).join('');
+  parts.push('<path class="area" d="' + line + 'L' + cx(points.length - 1) + ',' + yFor(bottom) +
+    'L' + cx(0) + ',' + yFor(bottom) + 'Z"/>');
+  parts.push('<path class="line" d="' + line + '"/>');
+  parts.push('<line class="cursor" y1="' + padT + '" y2="' + (padT + plotH) +
+    '" x1="0" x2="0" style="display:none"/>');
+
+  // A single marker on the last point: labelling every point would be noise, and
+  // the end of the line is the number that matters.
+  const last = points[points.length - 1];
+  parts.push('<circle class="dot" cx="' + cx(points.length - 1) + '" cy="' +
+    yFor(last.cumulativeNet) + '" r="4"/>');
+  parts.push('<text class="vlabel" x="' + (cx(points.length - 1) - 6) + '" y="' +
+    (yFor(last.cumulativeNet) - 9) + '" text-anchor="end">' +
+    (last.cumulativeNet >= 0 ? '+' : '') + nf.format(last.cumulativeNet) + '</text>');
+
+  points.forEach((p, i) => {
+    parts.push('<rect class="hit" data-index="' + i + '" x="' + xFor(i) + '" y="' + padT +
+      '" width="' + band + '" height="' + plotH + '"/>');
+  });
+
+  svg.innerHTML = parts.join('');
+  bindChartHover(svg, points, xFor, band, height);
+}
+
+/* ---------- resolution times ---------- */
+
+/* Ordinal buckets on one hue: duration is a magnitude, not an identity, so a
+   categorical palette would be the wrong encoding here. One series, so the
+   title carries the label and there is no legend to read. */
+function drawDurations(data) {
+  const svg = el('duration-chart');
+  const counts = (data && data.overallBuckets) || [];
+  const labels = (data && data.bucketLabels) || [];
+  const width = chartWidth(svg), height = 150;
+  const padL = 46, padR = 10, padT = 20, padB = 22;
+  const plotW = width - padL - padR, plotH = height - padT - padB;
+  frameSvg(svg, width, height);
+
+  const total = counts.reduce((sum, n) => sum + (+n || 0), 0);
+  if (!total) {
+    svg.innerHTML = '<text class="tick" x="' + padL + '" y="' + (height / 2) + '">' +
+      'No closed cases match these filters.</text>';
+    return;
+  }
+
+  const top = niceMax(Math.max(...counts.map(Number)), 2);
+  const band = plotW / counts.length;
+  const barW = Math.max(6, Math.min(band - 2, 90));
+  const yFor = value => padT + plotH - (value / top) * plotH;
+
+  let parts = [];
+  for (let t = 0; t <= 2; t++) {
+    const value = top * t / 2, y = yFor(value);
+    parts.push('<line class="' + (t === 0 ? 'zeroline' : 'gridline') + '" x1="' + padL +
+      '" y1="' + y + '" x2="' + (width - padR) + '" y2="' + y + '"/>');
+    parts.push('<text class="tick" x="' + (padL - 7) + '" y="' + (y + 3) +
+      '" text-anchor="end">' + nf.format(Math.round(value)) + '</text>');
+  }
+
+  // Five bars, so every one can carry its own value -- direct labels beat a
+  // hover-only chart when the whole series fits on screen.
+  counts.forEach((raw, i) => {
+    const value = +raw || 0;
+    const left = padL + i * band + (band - barW) / 2;
+    parts.push('<path class="barDemand" d="' +
+      barTop(left, yFor(value), barW, plotH - (yFor(value) - padT), 4) + '"/>');
+    parts.push('<text class="vlabel" x="' + (left + barW / 2) + '" y="' + (yFor(value) - 6) + '">' +
+      nf.format(value) + ' &middot; ' + Math.round(100 * value / total) + '%</text>');
+    parts.push('<text class="tick" x="' + (left + barW / 2) + '" y="' + (height - 6) +
+      '" text-anchor="middle">' + escapeHtml(labels[i] || '') + '</text>');
+  });
+
+  svg.innerHTML = parts.join('');
+}
+
+/* Median, not mean, drives the bar. In this data BTDT averages 130 hours but its
+   median is 9: a handful of very long cases drag the mean somewhere no actual
+   case lives. The mean is still shown as a number, next to the p90, so the skew
+   itself is visible. */
+function renderResolution(data) {
+  const rows = (data && data.rows) || [];
+  const groupLabel = (el('f-groupby').selectedOptions[0] || {}).text || 'group';
+
+  const notes = [nf.format((data && data.closedTotal) || 0) + ' closed cases \u00B7 by ' +
+    groupLabel.toLowerCase()];
+  if (data && +data.negativeDuration > 0) {
+    // Do not quietly drop them: a case closed before it was opened is a data
+    // fault worth seeing, and it would otherwise pull an average negative.
+    notes.push(nf.format(data.negativeDuration) +
+      ' excluded (closed before opened)');
+  }
+  if (rows.length) notes.push(nf.format(rows.length) + ' groups');
+  el('resolution-sub').textContent = notes.join(' \u00B7 ');
+
+  if (!rows.length) {
+    el('resolution-body').innerHTML =
+      '<tr><td colspan="6" class="meta" style="padding-left:14px">' +
+      'No closed cases match these filters, so there is nothing to time.</td></tr>';
+    return;
+  }
+
+  /* The bars are scaled to the slowest group that carries real volume, not to
+     the slowest group outright. Grouped by department, DISB holds ONE closed
+     case at 43 days; scaling to it squashed the four groups covering 11,441 of
+     the 11,445 closed cases into indistinguishable slivers. A thin group still
+     gets its row and its exact number -- it just does not get to set the scale,
+     and a bar that runs past the end is drawn with a pointed tip so the
+     truncation is visible rather than implied. The scale is named in the column
+     header for the same reason. */
+  const closedTotal = rows.reduce((sum, r) => sum + (+r.closed || 0), 0);
+  const floor = Math.max(1, closedTotal * 0.01);
+  const carrying = rows.filter(r => (+r.closed || 0) >= floor);
+  const scale = Math.max(1, ...(carrying.length ? carrying : rows).map(r => +r.medianHours || 0));
+  const clipped = rows.some(r => (+r.medianHours || 0) > scale);
+  el('medhead').textContent = clipped
+    ? 'Median time to close (bar to ' + humanHours(scale) + ')'
+    : 'Median time to close';
+
+  el('resolution-body').innerHTML = rows.map(r => {
+    const median = +r.medianHours || 0;
+    const over = median > scale;
+    const pct = Math.max(2, Math.min(100, Math.round(100 * median / scale)));
+    return '<tr>' +
+      '<td><div class="title-cell">' + escapeHtml(r.group) + '</div></td>' +
+      '<td class="num meta">' + nf.format(r.closed) + '</td>' +
+      '<td style="width:34%"><div class="medtrack">' +
+        '<div class="medbar' + (over ? ' over' : '') + '" style="width:' + pct +
+        '%"></div></div></td>' +
+      '<td class="num">' + humanHours(median) + '</td>' +
+      '<td class="num meta">' + humanHours(r.p90Hours) + '</td>' +
+      '<td class="num meta">' + (r.pctLate === '' || r.pctLate == null
+        ? '\u2014'
+        : r.pctLate + '%') + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
 /* ---------- theme ---------- */
 function applyTheme(dark) {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
@@ -725,47 +1442,124 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 });
 
 /* ---------- boot ---------- */
+const LIST_CAP = 200;
+
 async function load() {
-  const cards = [document.getElementById('queue-card'), document.getElementById('map-card')];
+  const cards = ['queue-card', 'map-card', 'trend-card', 'resolution-card'].map(el);
   cards.forEach(c => c.classList.add('loading'));
+  markSetControls();
 
   try {
-    const [summary, queue, map] = await Promise.all([
-      getJson('/summary'),
-      getJson('/queue?top=200'),
-      getJson('/map')
+    // One round trip per panel, all in flight together, all carrying the same
+    // filters.
+    const [summary, results, map, trends, resolution] = await Promise.all([
+      getJson('/summary' + filterQuery()),
+      getJson('/search' + filterQuery({ top: LIST_CAP, sort: el('f-sort').value })),
+      getJson('/map' + filterQuery()),
+      getJson('/trends' + filterQuery({ bucket: trendBucket })),
+      getJson('/resolution' + filterQuery({ groupBy: el('f-groupby').value, top: 200 }))
     ]);
 
     renderTiles(summary);
-    renderQueue(queue);
+    renderQueue(results);
     renderLegend(map.counts);
+
+    trendData = trends;
+    resolutionData = resolution;
+    drawTrend(trends);
+    drawBacklog(trends);
+    drawDurations(resolution);
+    renderResolution(resolution);
+
+    const totals = trends.totals || {};
+    el('trend-sub').textContent = trends.series && trends.series.length
+      ? nf.format(totals.opened || 0) + ' opened vs ' + nf.format(totals.closed || 0) +
+        ' closed \u00B7 ' + trends.from + ' to ' + trends.to
+      : 'Nothing to plot for these filters';
 
     mapData = map;
     if (pointLayer) leafletMap.removeLayer(pointLayer);
     pointLayer = new CanvasPoints(map.points).addTo(leafletMap);
 
-    document.getElementById('subtitle').textContent =
-      nf.format(map.plotted) + ' of ' + nf.format(map.totalRows) + ' requests plotted';
+    // The as-of date belongs beside the counts, not buried in the source: every
+    // overdue figure on this page is relative to it, and the exercise pins it to
+    // August 14 2026 rather than the wall clock.
+    const asOf = parseStamp(summary.asOf);
+    el('subtitle').textContent =
+      nf.format(map.plotted) + ' of ' + nf.format(map.totalRows) + ' matching requests plotted' +
+      (asOf ? ' \u00B7 measured as of ' + asOf.toLocaleDateString('en-US',
+        { month: 'long', day: 'numeric', year: 'numeric' }) : '');
 
-    // State the cap rather than letting a short map look complete.
-    document.getElementById('footnote').textContent =
-      map.missingCoordinates > 0
-        ? nf.format(map.missingCoordinates) + ' request(s) have no usable coordinates and are not on the map. ' +
-          'Queue shows the 200 most overdue open cases.'
-        : 'Queue shows the 200 most overdue open cases.';
+    // State every cap rather than letting a partial view read as complete.
+    const notes = [];
+    if (map.missingCoordinates > 0) {
+      notes.push(nf.format(map.missingCoordinates) +
+        ' matching request(s) have no usable coordinates and are not on the map.');
+    }
+    if (+results.total > (results.rows || []).length) {
+      notes.push('List shows the first ' + nf.format(LIST_CAP) + ' of ' +
+        nf.format(results.total) + ' matches; the charts and tiles cover all of them.');
+    }
+    notes.push('Overdue is measured live against each SLA target as of ' +
+      (summary.asOf || '').slice(0, 10) + ', the reference date the dataset is built ' +
+      'around, and is not read from the source ON_TIME flag.');
+    el('footnote').textContent = notes.join(' ');
   } catch (err) {
     showError('Could not load data from ' + API, err.message);
-    document.getElementById('subtitle').textContent = 'Not connected';
+    el('subtitle').textContent = 'Not connected';
   } finally {
     cards.forEach(c => c.classList.remove('loading'));
   }
 }
 
+/* ---------- controls ---------- */
+let reloadTimer = null;
+function scheduleLoad(delay) {
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(load, delay || 0);
+}
+
+// Typing debounces; picking from a dropdown does not -- a deliberate choice
+// should feel immediate.
+el('f-text').addEventListener('input', () => scheduleLoad(320));
+['f-neighborhood', 'f-department', 'f-reason', 'f-sla', 'f-from', 'f-to', 'f-sort', 'f-groupby']
+  .forEach(id => el(id).addEventListener('change', () => scheduleLoad(0)));
+
+el('filterbar').addEventListener('submit', event => event.preventDefault());
+
+el('f-reset').addEventListener('click', () => {
+  ['f-text', 'f-neighborhood', 'f-department', 'f-reason', 'f-sla', 'f-from', 'f-to']
+    .forEach(id => { el(id).value = ''; });
+  el('f-sort').value = 'urgency';
+  load();
+});
+
+document.querySelectorAll('#trend-card [data-bucket]').forEach(button => {
+  button.addEventListener('click', () => {
+    trendBucket = button.dataset.bucket;
+    document.querySelectorAll('#trend-card [data-bucket]').forEach(b => {
+      b.setAttribute('aria-pressed', b === button);
+    });
+    load();
+  });
+});
+
+// The charts are laid out in pixels, so a resize needs a redraw rather than a
+// refetch: the data has not changed.
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (trendData) { drawTrend(trendData); drawBacklog(trendData); }
+    if (resolutionData) drawDurations(resolutionData);
+  }, 150);
+});
+
 buildMap();
 applyTheme(isDark());
-load();
+loadFilterOptions().catch(err => showError('Could not load filter options', err.message))
+  .finally(load);
 </script>
 </body>
 </html>
 
-Set app = ##class(Security.Applications).%OpenId("/PROJA/API")  Set app.MatchRoles = ":%DB_USER"  Write $System.Status.GetErrorText(app.%Save()), !

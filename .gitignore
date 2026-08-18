@@ -1,0 +1,4 @@
+.DS_Store
+
+# Word lock files, created while a .docx in this repo is open
+~$*

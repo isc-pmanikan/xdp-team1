@@ -62,14 +62,20 @@ XData UrlMap [ XMLNamespace = "http://www.intersystems.com/urlmap" ]
 <Route Url="/queue" Method="GET" Call="GetQueue"/>
 <Route Url="/map" Method="GET" Call="GetMap"/>
 <Route Url="/request/:caseId" Method="GET" Call="GetRequest"/>
+<Route Url="/search" Method="GET" Call="GetSearch"/>
+<Route Url="/filters" Method="GET" Call="GetFilters"/>
+<Route Url="/trends" Method="GET" Call="GetTrends"/>
+<Route Url="/resolution" Method="GET" Call="GetResolution"/>
 </Routes>
 }
 
-/// GET /summary -> headline counts for the stat tiles
+/// GET /summary -> headline counts for the stat tiles.
+/// Honours the /search filters, so the tiles describe whatever is on screen.
 ClassMethod GetSummary() As %Status
 {
 	Try {
-		Do ..WriteJson(##class(ProjA.ServiceRequest).SummaryData())
+		Do ..ReadFilters(.filters)
+		Do ..WriteJson(##class(ProjA.ServiceRequest).SummaryData(.filters))
 	} Catch ex {
 		Do ..WriteError(ex)
 	}
@@ -88,12 +94,70 @@ ClassMethod GetQueue() As %Status
 	Quit $$$OK
 }
 
-/// GET /map?limit=0 -> every plottable point, compactly
+/// GET /map?limit=0 -> every plottable point, compactly.
+/// Accepts the same filter parameters as /search, so the map narrows with the
+/// list rather than showing a city-wide view beside a filtered table.
 ClassMethod GetMap() As %Status
 {
 	Try {
+		Do ..ReadFilters(.filters)
 		Set limit = ..IntParam("limit", 0, 0, 100000)
-		Do ..WriteJson(##class(ProjA.ServiceRequest).MapData(limit))
+		Do ..WriteJson(##class(ProjA.ServiceRequest).MapData(.filters, limit))
+	} Catch ex {
+		Do ..WriteError(ex)
+	}
+	Quit $$$OK
+}
+
+/// GET /search?text=pothole&neighborhood=Dorchester&sla=breached&sort=urgency&top=200
+///
+/// Every filter is optional. With no parameters at all this is simply the whole
+/// table, newest deadline first.
+ClassMethod GetSearch() As %Status
+{
+	Try {
+		Do ..ReadFilters(.filters)
+		Set top = ..IntParam("top", 200, 1, 2000)
+		Set sort = ..StrParam("sort", 30)
+		Do ..WriteJson(##class(ProjA.ServiceRequest).SearchData(.filters, top, sort))
+	} Catch ex {
+		Do ..WriteError(ex)
+	}
+	Quit $$$OK
+}
+
+/// GET /filters -> the distinct values behind each filter control
+ClassMethod GetFilters() As %Status
+{
+	Try {
+		Do ..WriteJson(##class(ProjA.ServiceRequest).FilterOptionsData())
+	} Catch ex {
+		Do ..WriteError(ex)
+	}
+	Quit $$$OK
+}
+
+/// GET /trends?bucket=day|week|month -> opened vs. closed over time
+ClassMethod GetTrends() As %Status
+{
+	Try {
+		Do ..ReadFilters(.filters)
+		Set bucket = ..StrParam("bucket", 10)
+		Do ..WriteJson(##class(ProjA.ServiceRequest).TrendData(.filters, bucket))
+	} Catch ex {
+		Do ..WriteError(ex)
+	}
+	Quit $$$OK
+}
+
+/// GET /resolution?groupBy=department&top=25 -> how long closed cases took
+ClassMethod GetResolution() As %Status
+{
+	Try {
+		Do ..ReadFilters(.filters)
+		Set groupBy = ..StrParam("groupBy", 30)
+		Set top = ..IntParam("top", 25, 1, 200)
+		Do ..WriteJson(##class(ProjA.ServiceRequest).ResolutionData(.filters, groupBy, top))
 	} Catch ex {
 		Do ..WriteError(ex)
 	}
@@ -131,6 +195,30 @@ ClassMethod GetRequest(caseId As %String) As %Status
 // ---------------------------------------------------------------
 //  Helpers
 // ---------------------------------------------------------------
+
+/// Collects the filter parameters shared by /summary, /search, /map, /trends
+/// and /resolution.
+///
+/// Read in one place so that every endpoint accepts exactly the same filter
+/// vocabulary. Validation lives in ProjA.ServiceRequest: an unrecognised value
+/// there is ignored rather than rejected here, so a stale bookmark still
+/// returns data instead of a 400.
+ClassMethod ReadFilters(Output filters) As %Status
+{
+	Kill filters
+	For key = "neighborhood", "department", "reason", "requestType", "source", "ward",
+		"status", "sla", "openedFrom", "openedTo", "text" {
+		Set filters(key) = ..StrParam(key, 200)
+	}
+	Quit $$$OK
+}
+
+/// Trimmed, length-capped string query parameter.
+ClassMethod StrParam(name As %String, maxLen As %Integer = 100) As %String
+{
+	Set raw = $Get(%request.Data(name, 1))
+	Quit $Extract($ZStrip(raw, "<>W"), 1, maxLen)
+}
 
 ClassMethod WriteJson(payload As %DynamicAbstractObject) As %Status
 {

@@ -13,7 +13,14 @@ Class ProjA.Loader Extends %RegisteredObject
 /// dominate; committing once for all 25,000 makes one failure lose everything.
 Parameter BATCHSIZE = 1000;
 
-Parameter DEFAULTFILE = "C:\Users\avergara\Documents\Intersystems\src\Boston311-2026-Base.csv";
+
+/// Staged outside the repo on purpose. The IRIS server processes run as their own
+/// uid (not the logged-in user), and ~/Documents is mode 700 on macOS, so a path
+/// inside the checkout is unreadable to IRIS -- LinkToFile fails with a
+/// permission error before a single row is parsed. /Users/Shared is world-readable
+/// and, unlike /tmp, survives a reboot. Refresh it with:
+///     cp src/Boston311-2026-Base.csv /Users/Shared/xdp-team1/data/
+Parameter DEFAULTFILE = "/Users/Shared/xdp-team1/data/Boston311-2026-Base.csv";
 
 /// Convenience entry point: loads the default file, then prints the summary.
 ClassMethod Run(maxRows As %Integer = 0) As %Status
